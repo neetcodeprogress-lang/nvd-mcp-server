@@ -17,6 +17,13 @@ MAX_ATTEMPTS = 4  # 1 try + up to 3 retries
 BASE_DELAY_SECONDS = 1.0  # backoff waits about 1s, 2s, 4s
 MAX_RETRY_AFTER_SECONDS = 60.0  # never wait longer than this, even if NVD's Retry-After asks for more
 
+# Paging settings (used by search)
+MAX_PAGE_SIZE = 2000  # NVD's cap on resultsPerPage for the CVE API
+# NVD's published limits: 5 requests per 30s without a key, 50 per 30s with one.
+# Waiting this long between pages keeps us under them.
+PAGE_DELAY_NO_KEY = 6.0
+PAGE_DELAY_WITH_KEY = 0.6
+
 
 class NvdError(Exception):
     """Raised when NVD can't give us a usable answer (after retrying, where retrying makes sense)."""
@@ -54,6 +61,8 @@ class NvdClient:
     ) -> None:
         # Only send the apiKey header when we actually have a key.
         self._headers = {"apiKey": api_key} if api_key else {}
+        # A key buys a higher rate limit, so we can pause less between pages.
+        self._page_delay = PAGE_DELAY_WITH_KEY if api_key else PAGE_DELAY_NO_KEY
         # Remember whether we created the HTTP client, so we only close what we own.
         self._owns_http = http is None
         self._http = http or httpx.AsyncClient()
@@ -102,6 +111,35 @@ class NvdClient:
             f"NVD request failed after {MAX_ATTEMPTS} attempts ({last_problem}). "
             "Try again in a minute."
         )
+
+    async def search(self, params: dict, max_results: int) -> list[dict]:
+        """Fetch up to max_results CVEs matching params, one page at a time.
+
+        Returns NVD's raw items (each looks like {"cve": {...}}).
+        Known limit: NVD pages by offset, so if a CVE is published mid-loop the
+        results shift and we may skip one or see one twice. NVD offers no cursor.
+        """
+        results: list[dict] = []
+        start_index = 0
+        while len(results) < max_results:
+            if start_index > 0:
+                # Not the first page: pause so we stay under NVD's rate limit.
+                await self._sleep(self._page_delay)
+
+            # Never ask for more than we still need (or more than NVD allows per page).
+            page_size = min(MAX_PAGE_SIZE, max_results - len(results))
+            body = await self._get({**params, "startIndex": start_index, "resultsPerPage": page_size})
+
+            page = body.get("vulnerabilities", [])
+            results.extend(page)
+            start_index += len(page)
+
+            # Stop when NVD has nothing more. The empty-page check also prevents an
+            # endless loop if NVD ever returns no items while claiming there are more.
+            if not page or start_index >= body.get("totalResults", 0):
+                break
+
+        return results
 
     async def aclose(self) -> None:
         """Close the HTTP client, but only if this object created it."""
