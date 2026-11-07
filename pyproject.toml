@@ -19,3 +19,7 @@ dev = [
     "pytest-asyncio>=1.4.1.post1",
     "respx>=0.23.1",
 ]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"  # lets pytest run `async def test_...` functions without extra decorators
+asyncio_default_fixture_loop_scope = "function"  # each test gets a fresh event loop (silences a pytest-asyncio warning)
