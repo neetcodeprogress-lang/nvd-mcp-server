@@ -13,7 +13,10 @@ from mcp.server.mcpserver.exceptions import ToolError
 from nvd_mcp.models import CveSummary, from_nvd
 from nvd_mcp.nvd_client import NvdClient, NvdError
 
-MAX_SEARCH_RESULTS = 100  # keeps one search from flooding the assistant's context
+# keeps one search from flooding the assistant's context
+# Note: 100 went over Claude Code's tool-output limit (~50k chars) in a real run
+MAX_SEARCH_RESULTS = 50
+
 DEFAULT_SEARCH_RESULTS = 20
 
 # NVD IDs look like CVE-2021-44228: a 4-digit year, then 4 or more digits.
@@ -36,17 +39,20 @@ def ping() -> str:
 async def search_cves(keyword: str, max_results: int = DEFAULT_SEARCH_RESULTS) -> list[CveSummary]:
     """Search NVD for CVEs whose description matches a keyword (e.g. "log4j", "openssl").
 
-    Returns up to max_results summaries (capped at 100). Descriptions are shortened;
+    Returns up to max_results summaries (capped at 50), newest first. If more CVEs
+    match than max_results, you get the newest ones. Descriptions are shortened;
     use get_cve for the full text of one CVE.
     """
     keyword = keyword.strip()
     if not keyword:
         raise ToolError("keyword must not be empty.")
-    # Clamp into 1..100 instead of failing: a too-big number is a request we can still serve.
+    # Clamp into 1..50 instead of failing: a too-big number is a request we can still serve.
     max_results = max(1, min(max_results, MAX_SEARCH_RESULTS))
 
     try:
-        items = await _client.search({"keywordSearch": keyword}, max_results)
+        # search_newest, not search: NVD returns oldest first, so plain search would
+        # answer "what's recent?" with CVEs from years ago (found in the end-to-end run).
+        items = await _client.search_newest({"keywordSearch": keyword}, max_results)
     except NvdError as e:
         raise ToolError(f"NVD request failed: {e}") from e
 

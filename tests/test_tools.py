@@ -49,15 +49,30 @@ async def test_search_sends_keyword_and_shortens_descriptions():
     results = await server.search_cves("  log4j  ")
 
     assert route.calls.last.request.url.params["keywordSearch"] == "log4j"  # spaces trimmed
-    assert [r.cve_id for r in results] == ["CVE-1", "CVE-2"]
+    # NVD sent oldest first (CVE-1, CVE-2); the tool hands them back newest first.
+    assert [r.cve_id for r in results] == ["CVE-2", "CVE-1"]
     for r in results:
         assert len(r.description) == SEARCH_DESCRIPTION_LIMIT
         assert r.description.endswith("…")
 
 
+@respx.mock
+async def test_search_returns_the_newest_when_too_many_match():
+    # 3 match but we want 2. The first reply only tells us the total (3);
+    # the second request starts at 3 - 2 = 1, skipping the oldest (CVE-1).
+    first = httpx.Response(200, json={"totalResults": 3, "vulnerabilities": [make_item("CVE-1"), make_item("CVE-2")]})
+    last_two = httpx.Response(200, json={"totalResults": 3, "vulnerabilities": [make_item("CVE-2"), make_item("CVE-3")]})
+    route = respx.get(NVD_URL).mock(side_effect=[first, last_two])
+
+    results = await server.search_cves("fortios", max_results=2)
+
+    assert route.calls.last.request.url.params["startIndex"] == "1"
+    assert [r.cve_id for r in results] == ["CVE-3", "CVE-2"]
+
+
 @pytest.mark.parametrize(
     ("asked", "sent"),
-    [(500, 100), (0, 1), (-5, 1), (42, 42)],
+    [(500, 50), (0, 1), (-5, 1), (42, 42)],
     ids=["too-big-capped", "zero-raised", "negative-raised", "in-range-kept"],
 )
 @respx.mock

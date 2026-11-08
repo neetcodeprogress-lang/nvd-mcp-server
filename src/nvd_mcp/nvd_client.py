@@ -112,17 +112,16 @@ class NvdClient:
             "Try again in a minute."
         )
 
-    async def search(self, params: dict, max_results: int) -> list[dict]:
-        """Fetch up to max_results CVEs matching params, one page at a time.
+    async def search(self, params: dict, max_results: int, start_index: int = 0) -> list[dict]:
+        """Fetch up to max_results CVEs matching params, one page at a time, from start_index on.
 
-        Returns NVD's raw items (each looks like {"cve": {...}}).
+        Returns NVD's raw items (each looks like {"cve": {...}}), in NVD's order: oldest first.
         Known limit: NVD pages by offset, so if a CVE is published mid-loop the
         results shift and we may skip one or see one twice. NVD offers no cursor.
         """
         results: list[dict] = []
-        start_index = 0
         while len(results) < max_results:
-            if start_index > 0:
+            if results:
                 # Not the first page: pause so we stay under NVD's rate limit.
                 await self._sleep(self._page_delay)
 
@@ -140,6 +139,27 @@ class NvdClient:
                 break
 
         return results
+
+    async def search_newest(self, params: dict, max_results: int) -> list[dict]:
+        """Like search, but returns the NEWEST max_results matches, newest first.
+
+        NVD always returns oldest first and has no sort option. So we read
+        totalResults from the first page, and if the matches don't all fit,
+        we jump to the end: start at totalResults - max_results.
+        """
+        page_size = min(MAX_PAGE_SIZE, max_results)
+        body = await self._get({**params, "startIndex": 0, "resultsPerPage": page_size})
+        items = body.get("vulnerabilities", [])
+        total = body.get("totalResults", 0)
+
+        if len(items) >= total:
+            # NVD gave us every match in one request (the common case): no second call needed.
+            return items[::-1]
+
+        # More matches than we want: skip ahead to the newest ones.
+        await self._sleep(self._page_delay)  # second request: pause for the rate limit
+        newest = await self.search(params, max_results, start_index=max(0, total - max_results))
+        return newest[::-1]
 
     async def aclose(self) -> None:
         """Close the HTTP client, but only if this object created it."""

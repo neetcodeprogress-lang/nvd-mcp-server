@@ -186,3 +186,55 @@ async def test_search_pauses_between_pages(monkeypatch, api_key, expected_pause)
     await client.search({}, max_results=40)
 
     assert waits == [expected_pause]  # exactly one pause: between page 1 and page 2
+
+
+# --- Newest first (Sunday fix: the end-to-end run showed NVD returns oldest first) ---
+
+
+def ids(items: list[dict]) -> list[str]:
+    """Just the CVE IDs, so a failing assert is easy to read."""
+    return [item["cve"]["id"] for item in items]
+
+
+@respx.mock
+async def test_search_newest_when_everything_fits_makes_one_request():
+    # 3 exist, we'd take 20: one request, then reverse so the newest is first.
+    route = respx.get(NVD_URL).mock(side_effect=[make_page(0, 3, 3)])
+    sleep, waits = make_fake_sleep()
+    client = NvdClient(api_key=None, sleep=sleep)
+
+    results = await client.search_newest({}, max_results=20)
+
+    assert ids(results) == ["CVE-2024-00002", "CVE-2024-00001", "CVE-2024-00000"]
+    assert route.call_count == 1
+    assert waits == []
+
+
+@respx.mock
+async def test_search_newest_jumps_to_the_end_when_there_are_too_many():
+    # 450 exist, we want 100: the first request only tells us the total,
+    # the second starts at 450 - 100 = 350 and gets CVEs 350..449.
+    route = respx.get(NVD_URL).mock(side_effect=[make_page(0, 100, 450), make_page(350, 100, 450)])
+    sleep, waits = make_fake_sleep()
+    client = NvdClient(api_key=None, sleep=sleep)
+
+    results = await client.search_newest({"keywordSearch": "fortios"}, max_results=100)
+
+    assert route.call_count == 2
+    assert sent_params(route, 1) == {"keywordSearch": "fortios", "startIndex": "350", "resultsPerPage": "100"}
+    assert ids(results)[0] == "CVE-2024-00449"  # newest first
+    assert ids(results)[-1] == "CVE-2024-00350"
+    assert len(results) == 100
+    assert waits == [nvd_client.PAGE_DELAY_NO_KEY]  # one pause, between the two requests
+
+
+@respx.mock
+async def test_search_newest_with_no_matches_returns_empty_list():
+    route = respx.get(NVD_URL).mock(side_effect=[OK])  # one response only: a second request would fail
+    sleep, waits = make_fake_sleep()
+    client = NvdClient(api_key=None, sleep=sleep)
+
+    results = await client.search_newest({}, max_results=20)
+
+    assert results == []
+    assert route.call_count == 1
