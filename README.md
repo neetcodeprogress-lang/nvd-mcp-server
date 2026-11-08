@@ -1,7 +1,7 @@
 # NVD MCP Server
 
 An [MCP](https://modelcontextprotocol.io) server that lets AI assistants look up
-vulnerabilities (CVEs) in NIST's National Vulnerability Database. Ask your assistant
+vulnerabilities (CVEs) in NIST's National Vulnerability Database. Ask your assistant questions such as
 "what's being actively exploited in the software we run?" and it searches the NVD for you.
 
 ## Tools
